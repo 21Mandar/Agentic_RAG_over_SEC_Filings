@@ -1,42 +1,123 @@
-# DADA2 — Agentic RAG over SEC filings
+# DADA2 — Agentic RAG over SEC Filings
 
-**Fill in both sections at the bottom before you submit.** Keep the deployed
-app line exactly in this form; it is how your app gets found and graded.
-
-## Getting started
-
-There is no separate spec. The instructions are in the notebooks, and
-`DADA2_00_Start_Here.ipynb` is the one to open first: it explains the
-assignment, the setup, the grading, and what each of the four notebooks after
-it asks for. Work through them in order.
-
-Get the files the same way as every class day: pull, then work in a copy:
-
-```bash
-cd lecture-files
-git pull
-cd ..
-cp -r lecture-files/DADA2 DADA2     # work in the copy, not in lecture-files/
-cd DADA2
-cp example.env .env                  # then fill in your keys
-```
-
-Then open `DADA2_00_Start_Here.ipynb` from your `DADA2` copy and run its
-setup check.
-
-Deploying is `DEPLOY.md`.
-
----
-
-## Submission
+An agentic retrieval-augmented generation (RAG) system that answers questions about the annual 10-K filings of **NVIDIA, AMD and Micron**. A small decision model routes each question and checks whether the retrieved passages actually answer it. When they don't, the agent retries with a stronger search or breaks the question into sub-questions. Answers cite the filing sections they came from.
 
 ```
 Deployed app: https://sec-filings-agent-pmtr.onrender.com
 ```
 
-ADD YOUR NAME TO YOUR RENDER PROJECT SO THE LINK CAN BE PERSONALIZED.
+> The free Render tier sleeps when idle, so the first request can take about a minute.
 
-PLEASE ENSURE YOUR URL WORKS BY TESTING IT IN INCOGNITO MODE.
+## Why this is hard
+
+The corpus holds three chip companies that write about the same topics (export controls, HBM supply, TSMC, AI demand) in similar words, year after year. A question about NVIDIA's fiscal 2026 risk factors has 26 other files full of near misses, so plain similarity search often returns the wrong company or year. The project measures which retrieval strategies fix that, and which agent design makes the best use of them.
+
+## How it works
+
+```
+route (decision model) ─┬─> lookup (figure questions → XBRL financials) ─> answer
+                        └─> retrieve ─> diagnose (decision model) ─> decide
+                                                                      ├─ sufficient / absent ─> answer (chat model)
+                                                                      ├─ wrong_words ────────> stronger search ─> retrieve
+                                                                      └─ incomplete ─────────> plan ─> execute ─> diagnose
+```
+
+- **Chat model** (`gemini-3.5-flash-lite`) writes queries, plans and answers.
+- **Decision model** (`clef-flash` on Cloudflare Workers AI) does the classification. It returns a probability for every option instead of prose, so the graph can fall back to a default when it is unsure. It decides two things: which kind of question this is, and whether the passages found are enough.
+- **LangGraph** wires the nodes together, with at most 3 retrieval attempts per question.
+- **Two tools** are exposed to the agent:
+  - `search_filings` runs the diagnosing retrieval graph.
+  - `financial_fact` reads exact figures from the XBRL financials files.
+
+### Retrieval strategies
+
+Each strategy adds one idea to the one before it, so the comparison stays fair. They all share the signature `search(question, k) -> [(source_file, passage_text), ...]`.
+
+| Strategy | Adds |
+|---|---|
+| `baseline` | Dense vector search over Pinecone |
+| `with_filter` | A metadata filter (company, year, section) extracted from the question |
+| `filter_rrf` | Multi-query: 4 LLM rewrites fused with Reciprocal Rank Fusion (constant 60) |
+| `filter_rrf_rerank` | Cohere `rerank-v3.5` reorders a pool of 10 down to 5 |
+| `hybrid_rrf` | BM25 keyword search fused with dense search |
+
+### The `ladder` agent (baseline for comparison)
+
+`rag/ladder.py` is a simpler agent without a decision model. The chat model grades its own results, and each failed grade moves up one rung: `filter` → `filter+rrf` → `filter+rrf+rerank`. The write-up below compares it against the diagnosis agent.
+
+## Corpus
+
+- **27 section files:** Item 1 (Business), Item 1A (Risk Factors) and Item 7 (MD&A) from 9 10-K filings: NVIDIA, AMD and Micron, 3 fiscal years each.
+- **3 XBRL financials files:** structured figures from EDGAR.
+- **`corpus/manifest.csv`:** company, year, section and SEC source URL for every file.
+- **Index:** chunks of 1200 characters with 150 overlap, embedded with `qwen3-embedding-0.6b` (1024 dimensions) in Pinecone index `dada2-1024`.
+
+## Evaluation
+
+`eval/` holds 24 labeled questions:
+
+- `evalset.json`: 14 **specific** questions, one gold file each
+- `evalset_hard.json`: 10 **comparative** questions, several gold files each
+
+Retrieval is scored with recall@k and MRR. Answers are scored by an LLM judge. The full results and analysis are in the [write-up](#write-up) below.
+
+## Repository layout
+
+```
+app.py              Gradio web app (Render entry point)
+agentui.py          Chat UI that streams each agent step
+rag/
+  config.py         Settings: models, chunking, K, thresholds
+  retrieval.py      The retrieval strategies
+  agent.py          Router, diagnosis, planner and the LangGraph graph
+  decide.py         Decision-model client (Cloudflare Workers AI)
+  ladder.py         Baseline ladder agent
+  embed.py          Cloudflare embeddings client
+  evaluate.py       Metrics and comparison tables
+  util.py           Rate-limit-aware retry helper
+corpus/             Filing sections, financials and manifest
+eval/               Labeled question sets
+render.yaml         Render Blueprint
+```
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.13 (matches `render.yaml`)
+- A Pinecone index already built from the corpus. The deployed app only searches the index and never builds it, and the notebooks that build it are not in this repo.
+- API keys:
+
+| Variable | Used for |
+|---|---|
+| `GOOGLE_API_KEY` | Gemini chat model (free tier: 15 requests/min, 500/day) |
+| `PINECONE_API_KEY` | Vector index |
+| `CLOUDFLARE_API_TOKEN` | Decision model and embeddings (Workers AI permission) |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account |
+| `COHERE_API_KEY` | `rerank-v3.5` reranker |
+
+### Run locally
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# create .env with the variables listed above
+python app.py              # http://localhost:7860
+```
+
+Set `EMBEDDINGS=cloudflare` (the default) so the app embeds questions the same way the index was built. `.env` is git-ignored. Never commit API keys.
+
+### Deploy to Render
+
+`render.yaml` is a Render Blueprint. In Render choose **New + → Blueprint**, pick this repo, and enter the five secret variables when prompted. Render runs `pip install -r requirements.txt` and then `python app.py`.
+
+## Tech stack
+
+Python · LangChain · LangGraph · Gemini · Cloudflare Workers AI · Pinecone · Cohere · BM25 · Gradio · Render
+
+---
+
+## Submission
 
 ### Write-up
 
