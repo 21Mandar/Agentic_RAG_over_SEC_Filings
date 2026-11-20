@@ -1,11 +1,10 @@
-"""Scoring. None of this is a TODO.
+"""Scoring.
 
-Every strategy you write in notebook 02 has the same shape:
+Every retrieval strategy has the same shape:
 
     search(question, k) -> [(source_file, passage_text), ...]   best first
 
-That is the whole contract, and it is what makes the comparison in notebook
-04 fair. Two strategies that return different things cannot be compared, so
+That is the whole contract, and it is what makes the comparison fair. Two strategies that return different things cannot be compared, so
 if you find yourself wanting to change the contract, change it for all of
 them.
 
@@ -19,11 +18,11 @@ We score two things about retrieval and one thing about the answer.
   MRR        How high up was the first genuinely relevant file? Recall says
              the evidence was in the list; MRR says whether it was at the top
              of it. Reranking is supposed to move MRR without moving recall,
-             and in notebook 02 you will see exactly that.
+             and the retrieval comparison shows exactly that.
 
   answer     Did the final answer actually say the right thing? Retrieval
              metrics can both look good while the answer is still wrong, so
-             notebook 04 checks the end of the pipeline too.
+             the agent benchmark checks the end of the pipeline too.
 """
 import json
 import os
@@ -33,8 +32,8 @@ from .util import retry, text_of
 
 
 def load_evalset(which="specific"):
-    """which is "specific" or "comparative". See notebook 02 for why there
-    are two sets and why they disagree about which strategy is best."""
+    """which is "specific" or "comparative". There are two sets because they
+    disagree about which strategy is best."""
     name = {"specific": "evalset.json", "comparative": "evalset_hard.json"}[which]
     with open(os.path.join(config.EVAL_DIR, name)) as f:
         return json.load(f)
@@ -141,7 +140,7 @@ def score_agent(run, items, model=None, pause=4.0):
     """End to end, with the bill.
 
     run(question) must return the agent's final state: a dict with "answer",
-    "chat_calls" and "decision_calls". Both agents in this assignment do.
+    "chat_calls" and "decision_calls". Both agents do.
 
     Accuracy comes from the judge. The other three columns are what the
     answer cost: chat-model calls (the ones that count against your Gemini

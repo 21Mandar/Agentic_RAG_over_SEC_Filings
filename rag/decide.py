@@ -1,4 +1,4 @@
-"""The decision model. Nothing here is a TODO.
+"""The decision model client.
 
 A chat model answers a question by writing. A decision model answers by
 picking: you hand it some state and a few typed questions, and it returns a
