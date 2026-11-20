@@ -119,6 +119,34 @@ def test_answer_default_absent_still_reads_the_passages(monkeypatch):
     assert out["answer"] == "answer from passages"
 
 
+# ---------------------------------------------------------------- lookup
+
+class FakeNamer:
+    def __init__(self, fact):
+        self.fact = fact
+
+    def with_structured_output(self, schema):
+        return self
+
+    def invoke(self, prompt):
+        return self.fact
+
+
+def test_lookup_for_an_uncovered_company_reports_no_figures(monkeypatch):
+    fact = agent.Fact(ticker="OTHER", concept="Revenues")
+    monkeypatch.setattr(agent.config, "chat", lambda: FakeNamer(fact))
+    out = agent.lookup({"question": "What was Apple's iPhone revenue?"})
+    (source, table), = out["documents"]
+    assert table.startswith("No financials for OTHER")
+
+
+def test_lookup_for_a_covered_company_reads_the_file(monkeypatch):
+    fact = agent.Fact(ticker="NVDA", concept="Revenues")
+    monkeypatch.setattr(agent.config, "chat", lambda: FakeNamer(fact))
+    (source, table), = agent.lookup({"question": "NVIDIA revenue?"})["documents"]
+    assert source == "NVDA_financials.json" and table.startswith("NVDA Revenues:")
+
+
 # --------------------------------------------------------------- execute
 
 def test_execute_returns_only_new_passages(monkeypatch):

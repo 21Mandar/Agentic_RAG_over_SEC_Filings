@@ -120,7 +120,10 @@ def after_route(state: RetrievalState) -> Literal["lookup", "retrieve"]:
 
 class Fact(BaseModel):
     """Which figure a question asks for."""
-    ticker: Literal["NVDA", "AMD", "MU"]
+    ticker: Literal["NVDA", "AMD", "MU", "OTHER"] = Field(
+        description="NVDA, AMD or MU. OTHER when the question is about any "
+                    "other company: there are no figures for those, and "
+                    "picking one of the three would answer the wrong question.")
     concept: Literal["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
                      "ResearchAndDevelopmentExpense", "GrossProfit", "NetIncomeLoss",
                      "OperatingIncomeLoss"] = Field(
@@ -139,6 +142,7 @@ FACT_PROMPT = """Which reported figure does this question ask for?
   operating income                 -> OperatingIncomeLoss
 
 ticker is the company's symbol: NVIDIA -> NVDA, AMD -> AMD, Micron -> MU.
+Any other company (Apple, Intel, Samsung, ...) -> OTHER.
 
 Example: "What did Micron spend on R&D in fiscal 2025?"
          -> ticker=MU, concept=ResearchAndDevelopmentExpense
