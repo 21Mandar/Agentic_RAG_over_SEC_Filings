@@ -26,15 +26,19 @@ We score two things about retrieval and one thing about the answer.
 """
 import json
 import os
+import re
 
 from . import config
 from .util import retry, text_of
 
 
 def load_evalset(which="specific"):
-    """which is "specific" or "comparative". There are two sets because they
-    disagree about which strategy is best."""
-    name = {"specific": "evalset.json", "comparative": "evalset_hard.json"}[which]
+    """which is "specific", "comparative" or "absent". specific and comparative
+    disagree about which retrieval strategy is best, so they are kept apart.
+    absent holds questions the corpus cannot answer: the right reply is to say
+    so, and it is where an agent that never gives up looks bad."""
+    name = {"specific": "evalset.json", "comparative": "evalset_hard.json",
+            "absent": "evalset_absent.json"}[which]
     with open(os.path.join(config.EVAL_DIR, name)) as f:
         return json.load(f)
 
@@ -116,6 +120,64 @@ def judge_answer(question, answer, model=None):
     verdict = retry(model.invoke, JUDGE_PROMPT.format(question=question, answer=answer))
     text = text_of(verdict).strip()
     return text.upper().startswith("CORRECT"), text
+
+
+REFERENCE_JUDGE_PROMPT = """You are grading one answer from a question answering
+system that reads SEC filings, against a reference answer written from the
+filing itself.
+
+Question: {question}
+
+Reference answer: {reference}
+
+Answer given: {answer}
+
+The answer is correct if it states the same facts as the reference (wording and
+extra detail do not matter). It is incorrect if it contradicts the reference,
+leaves out the key fact, or says it cannot find what the reference states.
+
+Reply with one word, CORRECT or INCORRECT, then one sentence of reason."""
+
+
+ABSENT_JUDGE_PROMPT = """You are grading one answer from a question answering
+system that reads only the 10-K filings of NVIDIA, AMD and Micron. The question
+below asks for something those filings do not contain.
+
+Question: {question}
+
+Answer given: {answer}
+
+The answer is correct if it says the filings do not provide this information,
+even if it adds what the filings do say about related topics. It is incorrect
+if it states a specific figure, date or fact as the answer, since that would be
+invented or taken from the wrong place.
+
+Reply with one word, CORRECT or INCORRECT, then one sentence of reason."""
+
+
+def judge_item(item, answer, model=None):
+    """Grade one answer with the strictest judge the item supports: against its
+    reference answer when it has one, as a should-be-refused question when it is
+    marked expect=absent, and on the question alone otherwise."""
+    if item.get("expect") == "absent":
+        prompt = ABSENT_JUDGE_PROMPT.format(question=item["question"], answer=answer)
+    elif item.get("reference"):
+        prompt = REFERENCE_JUDGE_PROMPT.format(
+            question=item["question"], reference=item["reference"], answer=answer)
+    else:
+        return judge_answer(item["question"], answer, model=model)
+    model = model or config.chat()
+    text = text_of(retry(model.invoke, prompt)).strip()
+    return text.upper().startswith("CORRECT"), text
+
+
+def citation_recall(answer, gold):
+    """Fraction of the gold files the answer cites by filename. Deterministic,
+    so it needs no judge: the answer prompt asks for filenames in brackets."""
+    if not gold:
+        return None
+    cited = set(re.findall(r"[A-Za-z]+_\d{4}_[a-z_]+\.txt", answer))
+    return len([g for g in gold if g in cited]) / len(gold)
 
 
 def score_answers(ask, items, model=None, pause=4.0):

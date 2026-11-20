@@ -1,0 +1,12 @@
+[
+  {"question": "What is Tesla's planned production capacity for its Dojo supercomputer?", "expect": "absent"},
+  {"question": "What was Apple's iPhone revenue in its most recent fiscal year?", "expect": "absent"},
+  {"question": "When did Qualcomm launch the Snapdragon X Elite?", "expect": "absent"},
+  {"question": "What dividend per share did Texas Instruments declare for 2024?", "expect": "absent"},
+  {"question": "What was the total compensation of NVIDIA's chief executive officer for fiscal 2025?", "expect": "absent"},
+  {"question": "How many employees does Samsung Electronics have?", "expect": "absent"},
+  {"question": "What was Intel's data center segment revenue in its most recent fiscal year?", "expect": "absent"},
+  {"question": "What gross margin does Broadcom earn on its custom AI accelerators?", "expect": "absent"},
+  {"question": "What was SK hynix's share of the HBM market in 2024?", "expect": "absent"},
+  {"question": "What was the population of Taiwan in 2024?", "expect": "absent"}
+]
