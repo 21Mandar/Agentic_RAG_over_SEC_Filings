@@ -1,11 +1,10 @@
-"""The deployable app: the agent from rag/agent.py behind the course's Gradio UI.
+"""The deployable app: the agent from rag/agent.py behind a Gradio chat UI.
 
     python app.py            # http://localhost:7860
 
-agentui.py is the same file as W03b, W05b and DADA1. It streams the agent
-node by node, so each tool call shows up in the chat as a collapsible entry
-before the answer, and the checkpointer keeps the conversation. Nothing to
-implement here; it works once notebooks 01 to 03 are done.
+agentui.py streams the agent node by node, so each tool call shows up in the
+chat as a collapsible entry before the answer, and the checkpointer keeps the
+conversation.
 """
 import os
 

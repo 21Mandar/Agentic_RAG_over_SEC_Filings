@@ -25,6 +25,7 @@ route (decision model) ─┬─> lookup (figure questions → XBRL financials) 
 - **Chat model** (`gemini-3.5-flash-lite`) writes queries, plans and answers.
 - **Decision model** (`clef-flash` on Cloudflare Workers AI) does the classification. It returns a probability for every option instead of prose, so the graph can fall back to a default when it is unsure. It decides two things: which kind of question this is, and whether the passages found are enough.
 - **LangGraph** wires the nodes together, with at most 3 retrieval attempts per question.
+- **A `Policy`** sets how far the agent trusts the decision model's verdicts (see [Verdict policy](#verdict-policy)).
 - **Two tools** are exposed to the agent:
   - `search_filings` runs the diagnosing retrieval graph.
   - `financial_fact` reads exact figures from the XBRL financials files.
@@ -54,29 +55,91 @@ Each strategy adds one idea to the one before it, so the comparison stays fair. 
 
 ## Evaluation
 
-`eval/` holds 24 labeled questions:
+`eval/` holds 34 labeled questions in three sets:
 
-- `evalset.json`: 14 **specific** questions, one gold file each
-- `evalset_hard.json`: 10 **comparative** questions, several gold files each
+| Set | Questions | What it tests |
+|---|---|---|
+| `evalset.json` (specific) | 14 | One company and year, one gold file, a reference answer from the filing |
+| `evalset_hard.json` (comparative) | 10 | Several companies or years, several gold files |
+| `evalset_absent.json` (not covered) | 10 | Things the filings do not contain (other companies' figures, executive pay, off-topic). Competitor names appear in the corpus, their figures do not. The right answer is to say so. |
 
-Retrieval is scored with recall@k and MRR. Answers are scored by an LLM judge. The full results and analysis are in the [write-up](#write-up) below.
+Retrieval is scored with recall@k and MRR. Answers are scored three ways: an LLM judge that sees the reference answer when there is one (and grades the "not covered" set on whether the agent declines instead of inventing), **citation recall** (the share of gold files the answer cites, which needs no judge), and cost per question (chat calls, decision calls, seconds).
+
+### Results
+
+The first comparison, before the verdict policy below existed: 14 questions (`specific[:8] + comparative[:6]`), one run each, with `gemini-3.5-flash-lite` as chat model and judge.
+
+| Agent | Accuracy | Chat calls/q | Decision calls/q | s/q |
+|---|---|---|---|---|
+| `ladder` | 0.93 | 4.9 | 0 | 18.5 |
+| diagnosis agent | 0.64 | 2.9 | 2.4 | 11.0 |
+
+The two routers (decision model vs. chat model) labeled 20 and 19 of 24 questions correctly. The decision model was about twice as fast (0.43 s vs 0.89 s per call), and its calls do not count against the Gemini quota.
+
+That is a small sample with one run per agent, and the judge saw neither the passages nor the reference answers. `benchmark.py` replaces it with repeated runs on all 34 questions and reference-aware judging (see [Benchmark](#benchmark)).
+
+### What the first comparison found
+
+The diagnosis agent was four questions behind the ladder, and none of its failures came from routing. Two came from how it trusted the decision model:
+
+- **An unsure `absent` ended the run.** For "What target markets does NVIDIA include in its business for fiscal year 2024?", a passage from the gold file `NVDA_2024_business.txt` was retrieved, but on the third attempt the decision model returned `absent` at only 0.50. `diagnose` only overrode an unsure `absent` while attempts remained, so at the cap it stood, and `answer` returned a fixed "the filings do not cover that" without a chat call. The ladder, run on the same question, found only a passage saying the markets remain competitive, cited it, and said the passages did not list them. Both failed to name the markets, but the ladder showed what it had found and the diagnosis agent discarded it.
+- **An unsure `sufficient` was never checked.** On NVIDIA's export controls over three years, the verdict was `sufficient` at 0.45 and the agent answered after one search.
+
+A third miss was the judge's, not the agent's: the $4.5 billion H20 answer matches the reference, but the judge saw neither the passages nor the reference and rejected fiscal 2026 as hypothetical. Re-running the same agent moved the score by two questions, so a single run is not enough to separate the agents.
+
+### Verdict policy
+
+Both findings became an explicit, switchable `Policy` in `rag/agent.py`:
+
+| | `LEGACY` (original) | `DEFAULT_POLICY` |
+|---|---|---|
+| `absent` | Ends the run once past 0.8 probability, or when attempts run out, with a canned reply and no chat call | Escalated like a search miss while attempts remain. If attempts run out, the chat model still reads the passages and says what they do and do not contain |
+| `sufficient` | Accepted at any probability | Below 0.7 it is not accepted while attempts remain: search harder, or plan if already on the strongest search |
+
+The cost of the fix is one or more extra searches on questions the filings do not cover, which is why the "not covered" set exists: it is where the fixed agent should pay, and where the legacy agent's shortcut should look best.
+
+Unit tests pin both behaviours, including a regression test that replays the failure above through the whole graph with a scripted decision model.
+
+A related fix: the figures `lookup` could only name NVDA, AMD or MU, so a question about another company's revenue was answered with one of the three companies' numbers. It now has an explicit `OTHER` option and reports that no figures exist.
+
+### Benchmark
+
+```bash
+python benchmark.py run --repeats 3 --budget 400   # resumable; --budget caps chat calls per invocation
+python benchmark.py report                          # writes results/SUMMARY.md
+```
+
+It runs `ladder`, `diagnosis-legacy` and `diagnosis-fixed` over all 34 questions. Each result is appended to `results/runs.jsonl` as it finishes and finished runs are skipped on the next call, so a full run can be split across days under the Gemini free tier (500 requests a day). The report gives accuracy as mean and standard deviation across repeats, citation recall, cost per question, and how many questions improved or got worse between the legacy and fixed policies.
+
+### Limitations
+
+- The judge is the same model family as the agent's chat model. Reading a sample of its verdicts in `results/runs.jsonl` is part of trusting a number.
+- The comparative questions have gold files but no reference answers, so they are judged on the question alone, plus citation recall.
+- The corpus is nine 10-K filings (three companies, three years). Results on this corpus say little about other document types.
+- The thresholds (`sufficient_min = 0.7`, `ABSENT_SURE = 0.8`) were set by judgment and not tuned. `Policy` takes them as parameters so they can be swept.
 
 ## Repository layout
 
 ```
 app.py              Gradio web app (Render entry point)
 agentui.py          Chat UI that streams each agent step
+benchmark.py        Repeated, resumable benchmark and report
 rag/
   config.py         Settings: models, chunking, K, thresholds
   retrieval.py      The retrieval strategies
-  agent.py          Router, diagnosis, planner and the LangGraph graph
+  agent.py          Router, diagnosis, Policy, planner and the LangGraph graph
   decide.py         Decision-model client (Cloudflare Workers AI)
   ladder.py         Baseline ladder agent
   embed.py          Cloudflare embeddings client
-  evaluate.py       Metrics and comparison tables
+  evaluate.py       Metrics, judges, citation recall and cost accounting
   util.py           Rate-limit-aware retry helper
+DADA2_0*.ipynb      The build-up in order: corpus and index (01), retrieval
+                    strategies (02), the agent (03) and the evaluation (04)
+figures/            Architecture and graph diagrams used by the notebooks
+tests/              Offline test suite (faked decision model, retrieval and chat)
 corpus/             Filing sections, financials and manifest
 eval/               Labeled question sets
+.github/workflows/  CI: runs the tests
 render.yaml         Render Blueprint
 ```
 
@@ -85,7 +148,7 @@ render.yaml         Render Blueprint
 ### Prerequisites
 
 - Python 3.13 (matches `render.yaml`)
-- A Pinecone index already built from the corpus. The deployed app only searches the index and never builds it, and the notebooks that build it are not in this repo.
+- A Pinecone index already built from the corpus. The deployed app only searches the index and never builds it, and notebook `DADA2_01_Corpus_and_Index.ipynb` is what builds it.
 - API keys:
 
 | Variable | Used for |
@@ -107,6 +170,15 @@ python app.py              # http://localhost:7860
 
 Set `EMBEDDINGS=cloudflare` (the default) so the app embeds questions the same way the index was built. `.env` is git-ignored. Never commit API keys.
 
+### Run the tests
+
+```bash
+pip install pytest
+python -m pytest -q
+```
+
+The suite is offline: the decision model, retrieval and chat model are faked, so it needs no API keys. It covers the verdict policy, routing, the graph end to end with a scripted decision model, the retrieval metrics, the judges and the benchmark's aggregation. CI runs it on every push and pull request.
+
 ### Deploy to Render
 
 `render.yaml` is a Render Blueprint. In Render choose **New + → Blueprint**, pick this repo, and enter the five secret variables when prompted. Render runs `pip install -r requirements.txt` and then `python app.py`.
@@ -114,19 +186,3 @@ Set `EMBEDDINGS=cloudflare` (the default) so the app embeds questions the same w
 ## Tech stack
 
 Python · LangChain · LangGraph · Gemini · Cloudflare Workers AI · Pinecone · Cohere · BM25 · Gradio · Render
-
----
-
-## Submission
-
-### Write-up
-
-**Conditions.** Chat model `gemini-3.5-flash-lite` (it also served as the judge); decision model `clef-flash` on Cloudflare Workers AI. Embeddings: `qwen3-embedding-0.6b` via Cloudflare, 1024 dimensions, Pinecone index `dada2-1024`. Chunks of 1200 characters with 150 overlap. K = 5 passages to the model; the reranker is Cohere `rerank-v3.5`, reordering a pool of 10 down to 5. Multi-query uses 4 rewrites fused with RRF (constant 60). Agent thresholds were left at their defaults: SURE 0.6, ABSENT_SURE 0.8, MAX_ATTEMPTS 3. The routers were compared on all 24 labeled questions (14 specific, 10 comparative); the agents on 14 (`specific[:8] + comparative[:6]`), each run once.
-
-**The routers.** The decision model labeled 20 of 24 questions correctly and the chat model 19 of 24, so accuracy differs by a single question. The decision model was about twice as fast (0.43 s against 0.89 s per call). The bigger difference is cost: its calls do not count against the 500-a-day Gemini quota, and it returns a probability for every option, which is what lets the graph fall back to a default strategy when it is unsure. In my traced run, the Micron memory-pricing question, which is labeled comparative, was routed as specific and still found both gold files, because the extractor named the company and left the year empty. Classifying questions is what the decision model is for: the same accuracy, faster, and free of the chat quota.
-
-**The agents.** The ladder scored 0.93 with 4.9 chat calls and 18.5 s per question; the diagnosis agent scored 0.64 with 2.9 chat calls, 2.4 decision calls and 11.0 s. The gap is four questions out of fourteen. In my traced run, none of its failures came from routing. The clearest failure was "What target markets does NVIDIA include in its business for fiscal year 2024?": a passage from the gold file `NVDA_2024_business.txt` was retrieved, but on the third attempt the decision model returned `absent` at only 0.50. My `diagnose` overrides an unsure `absent` only while attempts remain, so at the cap it was accepted, and `answer` returned a fixed "the filings do not cover that" without a chat call. Run separately, the ladder did not name the markets either; it found only a passage saying its target markets remain competitive, cited it, and said the passages did not list them. So on this question a gold-file hit did not mean the answering passage was retrieved, and the two agents differed in how they failed: the ladder showed what it had found, while mine discarded it. A second failure, on NVIDIA's export controls over three years, went the other way: the verdict was `sufficient` at 0.45, nothing checks the confidence of a `sufficient` verdict, and the agent answered after one search. A third was the judge's mistake rather than the agent's: the $4.5 billion H20 answer matches the reference, but the judge sees neither the passages nor the reference, and it rejected fiscal 2026 as hypothetical. In the inspection cell the agent answered 4 of 4 correctly, and in my traced run of the other ten it answered 7 of 10, so 11 of 14 across those two runs against 9 of 14 in the table: the score moved by two questions between runs.
-
-**What did not help.** The `absent` shortcut in `answer`. It saves one chat call when it fires, and in my traced run it fired only on a question the corpus answers, even though a passage from the gold file was already in `documents`. The ABSENT_SURE guard does not protect the last attempt, which is exactly where an unsure `absent` is most likely to appear after two failed searches. Removing the shortcut costs one chat call on those questions, and the answer prompt already tells the model to say in one sentence when the passages do not cover the question. The ladder's run on the same question shows what the alternative looks like: a cited answer that says what the passages do and do not contain.
-
-**What I would ship.** On these numbers, the ladder: it was right on four more questions, and its extra cost (2 more chat calls and 7.5 s per question) is affordable at this scale. The diagnosis agent's speed and quota savings are real, but I would only ship it after removing the `absent` shortcut and adding a minimum confidence for `sufficient`, and then measuring it again. Those fixes are not shown in any table here. Before choosing, I would want to know what share of users' questions are comparative, since both agent failures I traced came from a verdict on retrieved passages; how often they ask about things the filings truly do not cover, which is the only case the `absent` exit is good for; and I would give the judge the reference answers, since it misgraded a correct answer in this run.

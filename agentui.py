@@ -1,6 +1,6 @@
 """A minimal Gradio chat UI for LangGraph / LangChain agents.
 
-Usage (mirrors the in-class demo):
+Usage:
 
     from agentui import GradioUI
 

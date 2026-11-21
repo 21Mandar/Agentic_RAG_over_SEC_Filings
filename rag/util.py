@@ -4,7 +4,7 @@ import time
 
 def retry(fn, *args, tries=8, base=15, **kwargs):
     """Call fn, and when the API says you are over the rate limit, wait and
-    try again. Every model call in this assignment should go through here.
+    try again. Every model call should go through here.
 
         order = retry(ranker.invoke, prompt)
 
@@ -41,7 +41,7 @@ def text_of(message):
 
     Newer Gemini models return .content as a list of content blocks rather
     than a string, so anything that treats .content as text breaks on them.
-    Everything in this assignment that reads a reply goes through here.
+    Everything that reads a reply goes through here.
     """
     content = getattr(message, "content", message)
     if isinstance(content, str):

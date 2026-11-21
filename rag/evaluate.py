@@ -1,11 +1,10 @@
-"""Scoring. None of this is a TODO.
+"""Scoring.
 
-Every strategy you write in notebook 02 has the same shape:
+Every retrieval strategy has the same shape:
 
     search(question, k) -> [(source_file, passage_text), ...]   best first
 
-That is the whole contract, and it is what makes the comparison in notebook
-04 fair. Two strategies that return different things cannot be compared, so
+That is the whole contract, and it is what makes the comparison fair. Two strategies that return different things cannot be compared, so
 if you find yourself wanting to change the contract, change it for all of
 them.
 
@@ -19,23 +18,27 @@ We score two things about retrieval and one thing about the answer.
   MRR        How high up was the first genuinely relevant file? Recall says
              the evidence was in the list; MRR says whether it was at the top
              of it. Reranking is supposed to move MRR without moving recall,
-             and in notebook 02 you will see exactly that.
+             and the retrieval comparison shows exactly that.
 
   answer     Did the final answer actually say the right thing? Retrieval
              metrics can both look good while the answer is still wrong, so
-             notebook 04 checks the end of the pipeline too.
+             the agent benchmark checks the end of the pipeline too.
 """
 import json
 import os
+import re
 
 from . import config
 from .util import retry, text_of
 
 
 def load_evalset(which="specific"):
-    """which is "specific" or "comparative". See notebook 02 for why there
-    are two sets and why they disagree about which strategy is best."""
-    name = {"specific": "evalset.json", "comparative": "evalset_hard.json"}[which]
+    """which is "specific", "comparative" or "absent". specific and comparative
+    disagree about which retrieval strategy is best, so they are kept apart.
+    absent holds questions the corpus cannot answer: the right reply is to say
+    so, and it is where an agent that never gives up looks bad."""
+    name = {"specific": "evalset.json", "comparative": "evalset_hard.json",
+            "absent": "evalset_absent.json"}[which]
     with open(os.path.join(config.EVAL_DIR, name)) as f:
         return json.load(f)
 
@@ -119,6 +122,64 @@ def judge_answer(question, answer, model=None):
     return text.upper().startswith("CORRECT"), text
 
 
+REFERENCE_JUDGE_PROMPT = """You are grading one answer from a question answering
+system that reads SEC filings, against a reference answer written from the
+filing itself.
+
+Question: {question}
+
+Reference answer: {reference}
+
+Answer given: {answer}
+
+The answer is correct if it states the same facts as the reference (wording and
+extra detail do not matter). It is incorrect if it contradicts the reference,
+leaves out the key fact, or says it cannot find what the reference states.
+
+Reply with one word, CORRECT or INCORRECT, then one sentence of reason."""
+
+
+ABSENT_JUDGE_PROMPT = """You are grading one answer from a question answering
+system that reads only the 10-K filings of NVIDIA, AMD and Micron. The question
+below asks for something those filings do not contain.
+
+Question: {question}
+
+Answer given: {answer}
+
+The answer is correct if it says the filings do not provide this information,
+even if it adds what the filings do say about related topics. It is incorrect
+if it states a specific figure, date or fact as the answer, since that would be
+invented or taken from the wrong place.
+
+Reply with one word, CORRECT or INCORRECT, then one sentence of reason."""
+
+
+def judge_item(item, answer, model=None):
+    """Grade one answer with the strictest judge the item supports: against its
+    reference answer when it has one, as a should-be-refused question when it is
+    marked expect=absent, and on the question alone otherwise."""
+    if item.get("expect") == "absent":
+        prompt = ABSENT_JUDGE_PROMPT.format(question=item["question"], answer=answer)
+    elif item.get("reference"):
+        prompt = REFERENCE_JUDGE_PROMPT.format(
+            question=item["question"], reference=item["reference"], answer=answer)
+    else:
+        return judge_answer(item["question"], answer, model=model)
+    model = model or config.chat()
+    text = text_of(retry(model.invoke, prompt)).strip()
+    return text.upper().startswith("CORRECT"), text
+
+
+def citation_recall(answer, gold):
+    """Fraction of the gold files the answer cites by filename. Deterministic,
+    so it needs no judge: the answer prompt asks for filenames in brackets."""
+    if not gold:
+        return None
+    cited = set(re.findall(r"[A-Za-z]+_\d{4}_[a-z_]+\.txt", answer))
+    return len([g for g in gold if g in cited]) / len(gold)
+
+
 def score_answers(ask, items, model=None, pause=4.0):
     """End to end: ask() takes a question and returns the final answer text."""
     import time
@@ -141,7 +202,7 @@ def score_agent(run, items, model=None, pause=4.0):
     """End to end, with the bill.
 
     run(question) must return the agent's final state: a dict with "answer",
-    "chat_calls" and "decision_calls". Both agents in this assignment do.
+    "chat_calls" and "decision_calls". Both agents do.
 
     Accuracy comes from the judge. The other three columns are what the
     answer cost: chat-model calls (the ones that count against your Gemini

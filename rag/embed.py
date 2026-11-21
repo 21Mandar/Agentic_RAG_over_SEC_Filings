@@ -1,4 +1,4 @@
-"""Embeddings through Cloudflare Workers AI, for the deployed app. Given.
+"""Embeddings through Cloudflare Workers AI, for the deployed app.
 
 The index was built locally with Ollama's qwen3-embedding:0.6b. Cloudflare
 hosts the same model, and its vectors match Ollama's to four decimal places,

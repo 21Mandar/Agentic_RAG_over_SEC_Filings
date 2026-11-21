@@ -63,8 +63,6 @@ def bm25():
 
 # ------------------------------------------------------- reading the question
 #
-# TODO 2.1 (2 pts) — read the company and year out of the question.
-#
 # A question like "What did Micron say about HBM demand in fiscal 2025?"
 # carries three separate things: a company, a year, and a thing to look for.
 # The embedding has no idea they are different. Pull them apart, filter the
@@ -72,16 +70,14 @@ def bm25():
 
 class Filter(BaseModel):
     """Which filings the question is about, and what to look for in them."""
-    # TODO 2.1 — three fields. Two of them are optional, and it matters that
-    # they are, because plenty of questions name no company at all.
+    # ticker and fiscal_year are optional: plenty of questions name no company.
     ticker: Optional[Literal["NVDA","AMD","MU"]] = Field(default=None, description="The company ticker, if the question names exactly one.")
     fiscal_year: Optional[int] = Field(default=None, description="The fiscal year, but only if the question specifies exactly one.")
     search: str = Field(description="The text to search for in the filings without a company name or fiscal year.")
 
 
 def extract_filter(question):
-    # TODO 2.1 — with_structured_output, as in W05b.1. Tell the model to
-    # leave company and year empty unless the question names exactly one.
+    # Company and year stay empty unless the question names exactly one.
     model = config.chat().with_structured_output(Filter)
     prompt =  f"""Extract the company name, the year and what to search for. Leave the company name and year empty unless the question names exactly one.
                     Question: {question}"""
@@ -95,7 +91,6 @@ def where_of(f):
     Watch the empty case: {} is not the same as no filter, and passing {} will
     not do what you want. Return None when there is nothing to filter on.
     """
-    # TODO 2.1
     where =  {}
     if f.ticker:
         where["ticker"] = {"$eq": f.ticker}
@@ -107,7 +102,7 @@ def where_of(f):
 
 # --------------------------------------------------------- many queries, fused
 #
-# TODO 2.2 (2 pts) — multi-query and reciprocal rank fusion.
+# Multi-query and reciprocal rank fusion.
 #
 # One phrasing of a search finds what that phrasing happens to be close to.
 # Ask four ways and you get four ranked lists, and then you have a new
@@ -133,8 +128,8 @@ class Queries(BaseModel):
 
 
 def write_queries(text, n=4):
-    # TODO 2.2 — ask the model for n searches that cover the same intent.
-    # Return the original text as a single-item list if it gives you nothing.
+    # n searches covering the same intent; the original text if the model
+    # gives nothing back.
     model = config.chat().with_structured_output(Queries)
     prompt = (f"Write {n} different search queries for SEC 10-K filings that "
                 f"cover the same thing as the text below. Vary the wording.\n\n"
@@ -149,7 +144,6 @@ def rrf(rankings, k=config.RRF_K):
     Every item must be hashable, which is why the strategies pass
     (source, text) tuples around rather than Document objects.
     """
-    # TODO 2.2
     scores = {}
     for ranking in rankings:
         for position, item in enumerate(ranking):
@@ -158,7 +152,7 @@ def rrf(rankings, k=config.RRF_K):
 
 
 # --------------------------------------------------------------- the retrieval
-# dense() is given. It is the one you already know.
+# dense() is plain vector search, the building block for the rest.
 
 def dense(query, k, where=None):
     hits = vector_store().similarity_search(query, k=k, filter=where)
@@ -174,7 +168,7 @@ def lexical(query, k):
 
 # ---------------------------------------------------------------- reranking
 #
-# TODO 2.3 (2 pts) — reorder a pool with a cross-encoder.
+# Reorder a pool with a cross-encoder.
 #
 # Everything above ranks by comparing two vectors that were computed apart
 # from each other. The question never met the passage. A cross-encoder reads
@@ -184,8 +178,7 @@ def lexical(query, k):
 
 
 def rerank_cohere(question, passages, top_n):
-    # TODO 2.3 — cohere.ClientV2(...).rerank(model="rerank-v3.5", ...).
-    # It returns results carrying .index into the list you gave it.
+    # Results carry .index into the list that was passed in.
     response = cohere.ClientV2(os.environ["COHERE_API_KEY"]).rerank(model="rerank-v3.5",query=question, documents=[text for _, text in passages], top_n = top_n)
     return [passages[r.index] for r in response.results]
 
@@ -201,24 +194,24 @@ def rerank(question, passages, top_n=config.K):
 # -------------------------------------------------------------- the strategies
 #
 # Five strategies, and each one differs from the one above it in exactly one
-# way. That is what makes the table in notebook 04 readable: when a number
-# moves, there is only one thing it can be.
+# way. That is what makes the comparison readable: when a number moves, there is
+# only one thing it can be.
 #
 # All five return the same shape:  [(source_file, passage_text), ...]
 
 def baseline(question, k=config.K):
-    """Given. Embed the question as typed, one search, no filter."""
+    """Embed the question as typed, one search, no filter."""
     return dense(question, k)
 
 
 def with_filter(question, k=config.K):
-    # TODO 2.1 — extract, then search the filtered index for f.search only.
+    # Extract, then search the filtered index for f.search only.
     f = extract_filter(question)
     return dense(f.search, k, where = where_of(f))
 
 
 def filter_rrf(question, k=config.K):
-    # TODO 2.2 — one dense search per rewrite, same filter on each, fused.
+    # One dense search per rewrite, same filter on each, fused.
     f = extract_filter(question)
     where = where_of(f)
     results = [dense(query, k, where=where) for query in write_queries(f.search)]
@@ -226,7 +219,7 @@ def filter_rrf(question, k=config.K):
 
 
 def filter_rrf_rerank(question, k=config.K):
-    # TODO 2.3 — fuse to config.POOL candidates, then rerank down to k.
+    # Fuse to config.POOL candidates, then rerank down to k.
     # Note it is the original question that goes to the reranker, not
     # f.search. The cross-encoder reads language, so give it the real one.
     f = extract_filter(question)

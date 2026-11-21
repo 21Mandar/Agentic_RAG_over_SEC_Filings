@@ -1,8 +1,8 @@
-"""The ladder agent, given. This is the agent from the first version of DADA2,
-with two counters added so notebook 04 can put a bill next to each answer.
+"""The ladder agent: the baseline the diagnosis agent is measured against.
 
 It has no decision model. The chat model grades, and a failed grade moves one
-rung up a ladder of searches. Notebook 04 runs it against your agent.
+rung up a ladder of searches. Two counters (chat and decision calls) let the
+benchmark put a cost next to each answer.
 """
 import operator
 from typing import Annotated, Literal, TypedDict
