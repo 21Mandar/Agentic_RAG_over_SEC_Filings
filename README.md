@@ -133,6 +133,9 @@ rag/
   embed.py          Cloudflare embeddings client
   evaluate.py       Metrics, judges, citation recall and cost accounting
   util.py           Rate-limit-aware retry helper
+DADA2_0*.ipynb      The build-up in order: corpus and index (01), retrieval
+                    strategies (02), the agent (03) and the evaluation (04)
+figures/            Architecture and graph diagrams used by the notebooks
 tests/              Offline test suite (faked decision model, retrieval and chat)
 corpus/             Filing sections, financials and manifest
 eval/               Labeled question sets
@@ -145,7 +148,7 @@ render.yaml         Render Blueprint
 ### Prerequisites
 
 - Python 3.13 (matches `render.yaml`)
-- A Pinecone index already built from the corpus. The deployed app only searches the index and never builds it, and the code that builds it is not in this repo.
+- A Pinecone index already built from the corpus. The deployed app only searches the index and never builds it, and notebook `DADA2_01_Corpus_and_Index.ipynb` is what builds it.
 - API keys:
 
 | Variable | Used for |
