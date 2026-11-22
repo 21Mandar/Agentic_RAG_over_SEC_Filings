@@ -1,0 +1,2 @@
+# Keep the raw filings and corpus text out of the repository language statistics
+corpus/** linguist-vendored
